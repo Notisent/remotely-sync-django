@@ -98,32 +98,68 @@ export class WrappedDjangoClient {
   }
 
   private async authenticateWithDjango() {
-    const loginUrl = `${this.djangoConfig.endpoint}/api/token/`;
+    if (!this.djangoConfig.endpoint) {
+      throw new Error("Django endpoint URL is not configured");
+    }
     
-    const response = await requestUrl({
-      url: loginUrl,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        username: this.djangoConfig.username,
-        password: this.djangoConfig.password,
-      }),
-    });
-
-    if (response.status !== 200) {
-      throw new Error(`Django authentication failed: ${response.status}`);
+    if (!this.djangoConfig.username || !this.djangoConfig.password) {
+      throw new Error("Django username and password are required for authentication");
     }
 
-    const data = response.json;
-    this.accessToken = data.access;
-    this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+    const loginUrl = `${this.djangoConfig.endpoint}/api/token/`;
+    
+    try {
+      const response = await requestUrl({
+        url: loginUrl,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: this.djangoConfig.username,
+          password: this.djangoConfig.password,
+        }),
+      });
 
-    // Update config
-    this.djangoConfig.accessToken = this.accessToken;
-    this.djangoConfig.accessTokenExpiresAtTime = this.tokenExpiresAt;
-    await this.saveUpdatedConfigFunc();
+      if (response.status === 400) {
+        throw new Error("Invalid username or password");
+      } else if (response.status === 401) {
+        throw new Error("Authentication failed: Invalid credentials");
+      } else if (response.status === 403) {
+        throw new Error("Authentication failed: Access denied");
+      } else if (response.status === 404) {
+        throw new Error("Authentication endpoint not found. Please check your Django server URL");
+      } else if (response.status >= 500) {
+        throw new Error(`Django server error: ${response.status}. Please try again later`);
+      } else if (response.status !== 200) {
+        throw new Error(`Django authentication failed with status ${response.status}`);
+      }
+
+      const data = response.json;
+      if (!data.access) {
+        throw new Error("Invalid response from Django server: missing access token");
+      }
+
+      this.accessToken = data.access;
+      this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+
+      // Update config
+      this.djangoConfig.accessToken = this.accessToken;
+      this.djangoConfig.accessTokenExpiresAtTime = this.tokenExpiresAt;
+      await this.saveUpdatedConfigFunc();
+    } catch (error) {
+      if (error instanceof Error) {
+        // Re-throw our custom errors
+        throw error;
+      }
+      
+      // Handle network errors
+      if (error.message?.includes("fetch")) {
+        throw new Error(`Network error: Unable to connect to Django server at ${this.djangoConfig.endpoint}`);
+      }
+      
+      throw new Error(`Authentication failed: ${error.message || "Unknown error"}`);
+    }
   }
 
   async makeAuthenticatedRequest(
@@ -140,33 +176,49 @@ export class WrappedDjangoClient {
       ...headers,
     };
 
-    const response = await requestUrl({
-      url: `${this.djangoConfig.endpoint}${url}`,
-      method,
-      headers: requestHeaders,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const fullUrl = `${this.djangoConfig.endpoint}${url}`;
 
-    if (response.status === 401) {
-      // Token expired, try to refresh
-      await this.authenticateWithDjango();
-      
-      // Retry with new token
-      const retryHeaders = {
-        "Authorization": `Bearer ${this.accessToken}`,
-        "Content-Type": "application/json",
-        ...headers,
-      };
-
-      return await requestUrl({
-        url: `${this.djangoConfig.endpoint}${url}`,
+    try {
+      const response = await requestUrl({
+        url: fullUrl,
         method,
-        headers: retryHeaders,
+        headers: requestHeaders,
         body: body ? JSON.stringify(body) : undefined,
       });
-    }
 
-    return response;
+      if (response.status === 401) {
+        // Token expired, try to refresh
+        await this.authenticateWithDjango();
+        
+        // Retry with new token
+        const retryHeaders = {
+          "Authorization": `Bearer ${this.accessToken}`,
+          "Content-Type": "application/json",
+          ...headers,
+        };
+
+        return await requestUrl({
+          url: fullUrl,
+          method,
+          headers: retryHeaders,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+      }
+
+      return response;
+    } catch (error) {
+      // Handle network errors
+      if (error.message?.includes("fetch") || error.message?.includes("network")) {
+        throw new Error(`Network error: Unable to connect to Django server at ${this.djangoConfig.endpoint}`);
+      }
+      
+      // Handle timeout errors
+      if (error.message?.includes("timeout")) {
+        throw new Error(`Request timeout: Django server at ${this.djangoConfig.endpoint} is not responding`);
+      }
+      
+      throw new Error(`Request failed: ${error.message || "Unknown error"}`);
+    }
   }
 
   private async checkFolderExists(path: string): Promise<boolean> {
@@ -250,8 +302,18 @@ export const uploadToRemote = async (
     }
   );
 
-  if (response.status !== 200 && response.status !== 201) {
-    throw new Error(`Failed to upload file: ${response.status}`);
+  if (response.status === 400) {
+    throw new Error("Bad request: Invalid file data or path");
+  } else if (response.status === 403) {
+    throw new Error("Access denied: You don't have permission to upload files");
+  } else if (response.status === 404) {
+    throw new Error("Upload endpoint not found. Please check your Django server configuration");
+  } else if (response.status === 413) {
+    throw new Error("File too large: The file exceeds the maximum upload size");
+  } else if (response.status >= 500) {
+    throw new Error(`Django server error: ${response.status}. Please try again later`);
+  } else if (response.status !== 200 && response.status !== 201) {
+    throw new Error(`Failed to upload file: HTTP ${response.status}`);
   }
 
   const result = response.json;
@@ -270,8 +332,14 @@ export const listFromRemote = async (
     `/api/sync/files/?path=${encodeURIComponent(path)}`
   );
 
-  if (response.status !== 200) {
-    throw new Error(`Failed to list files: ${response.status}`);
+  if (response.status === 403) {
+    throw new Error("Access denied: You don't have permission to list files");
+  } else if (response.status === 404) {
+    throw new Error("Path not found or list endpoint not available");
+  } else if (response.status >= 500) {
+    throw new Error(`Django server error: ${response.status}. Please try again later`);
+  } else if (response.status !== 200) {
+    throw new Error(`Failed to list files: HTTP ${response.status}`);
   }
 
   const items = response.json.results || response.json;
@@ -295,8 +363,14 @@ export const downloadFromRemote = async (
     `/api/sync/files/${encodeURIComponent(remotePath)}/`
   );
 
-  if (response.status !== 200) {
-    throw new Error(`Failed to download file: ${response.status}`);
+  if (response.status === 403) {
+    throw new Error("Access denied: You don't have permission to download this file");
+  } else if (response.status === 404) {
+    throw new Error("File not found: The requested file does not exist");
+  } else if (response.status >= 500) {
+    throw new Error(`Django server error: ${response.status}. Please try again later`);
+  } else if (response.status !== 200) {
+    throw new Error(`Failed to download file: HTTP ${response.status}`);
   }
 
   const result = response.json;
@@ -336,8 +410,14 @@ export const deleteFromRemote = async (
     "DELETE"
   );
 
-  if (response.status !== 204 && response.status !== 200) {
-    throw new Error(`Failed to delete file: ${response.status}`);
+  if (response.status === 403) {
+    throw new Error("Access denied: You don't have permission to delete this file");
+  } else if (response.status === 404) {
+    throw new Error("File not found: The file to delete does not exist");
+  } else if (response.status >= 500) {
+    throw new Error(`Django server error: ${response.status}. Please try again later`);
+  } else if (response.status !== 204 && response.status !== 200) {
+    throw new Error(`Failed to delete file: HTTP ${response.status}`);
   }
 };
 
@@ -351,14 +431,21 @@ export const checkConnectivity = async (
     const response = await client.makeAuthenticatedRequest(`/api/sync/health/`);
     
     if (callbackFunc) {
-      callbackFunc("ok");
+      if (response.status === 200) {
+        callbackFunc("Connection successful");
+      } else {
+        callbackFunc(`Connection failed: HTTP ${response.status}`);
+      }
     }
     
     return response.status === 200;
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown connection error";
+    
     if (callbackFunc) {
-      callbackFunc("error");
+      callbackFunc(errorMessage);
     }
+    
     return false;
   }
 };

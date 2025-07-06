@@ -1448,6 +1448,135 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
       });
 
     //////////////////////////////////////////////////
+    // below for django
+    //////////////////////////////////////////////////
+
+    const djangoDiv = containerEl.createEl("div", { cls: "django-hide" });
+    djangoDiv.toggleClass(
+      "django-hide",
+      this.plugin.settings.serviceType !== "django"
+    );
+
+    djangoDiv.createEl("h2", { text: t("settings_django") });
+
+    const djangoLongDescDiv = djangoDiv.createEl("div", {
+      cls: "settings-long-desc",
+    });
+
+    djangoLongDescDiv.createEl("p", {
+      text: t("settings_django_disclaimer"),
+    });
+
+    djangoLongDescDiv.createEl("p", {
+      text: t("settings_django_folder", {
+        remoteBaseDir:
+          this.plugin.settings.django.remoteBaseDir || this.app.vault.getName(),
+      }),
+    });
+
+    new Setting(djangoDiv)
+      .setName(t("settings_django_endpoint"))
+      .setDesc(t("settings_django_endpoint_desc"))
+      .addText((text) =>
+        text
+          .setPlaceholder("https://your-django-server.com")
+          .setValue(this.plugin.settings.django.endpoint)
+          .onChange(async (value) => {
+            this.plugin.settings.django.endpoint = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(djangoDiv)
+      .setName(t("settings_django_username"))
+      .setDesc(t("settings_django_username_desc"))
+      .addText((text) => {
+        wrapTextWithPasswordHide(text);
+        text
+          .setPlaceholder("")
+          .setValue(this.plugin.settings.django.username)
+          .onChange(async (value) => {
+            this.plugin.settings.django.username = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(djangoDiv)
+      .setName(t("settings_django_password"))
+      .setDesc(t("settings_django_password_desc"))
+      .addText((text) => {
+        wrapTextWithPasswordHide(text);
+        text
+          .setPlaceholder("")
+          .setValue(this.plugin.settings.django.password)
+          .onChange(async (value) => {
+            this.plugin.settings.django.password = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    let newDjangoRemoteBaseDir =
+      this.plugin.settings.django.remoteBaseDir || "";
+    new Setting(djangoDiv)
+      .setName(t("settings_remotebasedir"))
+      .setDesc(t("settings_remotebasedir_desc"))
+      .addText((text) =>
+        text
+          .setPlaceholder(this.app.vault.getName())
+          .setValue(newDjangoRemoteBaseDir)
+          .onChange((value) => {
+            newDjangoRemoteBaseDir = value.trim();
+          })
+      )
+      .addButton((button) => {
+        button.setButtonText(t("confirm"));
+        button.onClick(() => {
+          new ChangeRemoteBaseDirModal(
+            this.app,
+            this.plugin,
+            newDjangoRemoteBaseDir,
+            "django"
+          ).open();
+        });
+      });
+
+    new Setting(djangoDiv)
+      .setName(t("settings_checkonnectivity"))
+      .setDesc(t("settings_checkonnectivity_desc"))
+      .addButton(async (button) => {
+        button.setButtonText(t("settings_checkonnectivity_button"));
+        button.onClick(async () => {
+          new Notice(t("settings_checkonnectivity_checking"));
+          const self = this;
+          const client = new RemoteClient(
+            "django",
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            this.plugin.settings.django,
+            this.app.vault.getName(),
+            () => self.plugin.saveSettings()
+          );
+          const errors = { msg: "" };
+          try {
+            const res = await client.checkConnectivity((err: any) => {
+              errors.msg = err;
+            });
+            if (res) {
+              new Notice(t("settings_django_connect_succ"));
+            } else {
+              new Notice(t("settings_django_connect_fail"));
+            }
+          } catch (err) {
+            console.error(err);
+            new Notice(t("settings_django_connect_fail"));
+            new Notice(errors.msg);
+          }
+        });
+      });
+
+    //////////////////////////////////////////////////
     // below for general chooser (part 2/2)
     //////////////////////////////////////////////////
 
@@ -1461,6 +1590,7 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
         dropdown.addOption("dropbox", t("settings_chooseservice_dropbox"));
         dropdown.addOption("webdav", t("settings_chooseservice_webdav"));
         dropdown.addOption("onedrive", t("settings_chooseservice_onedrive"));
+        dropdown.addOption("django", t("settings_chooseservice_django"));
         dropdown
           .setValue(this.plugin.settings.serviceType)
           .onChange(async (val: SUPPORTED_SERVICES_TYPE) => {
@@ -1480,6 +1610,10 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
             webdavDiv.toggleClass(
               "webdav-hide",
               this.plugin.settings.serviceType !== "webdav"
+            );
+            djangoDiv.toggleClass(
+              "django-hide",
+              this.plugin.settings.serviceType !== "django"
             );
             await this.plugin.saveSettings();
           });
