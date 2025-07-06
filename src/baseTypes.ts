@@ -8,12 +8,13 @@ import type { LangType, LangTypeAndAuto } from "./i18n";
 
 export const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
-export type SUPPORTED_SERVICES_TYPE = "s3" | "webdav" | "dropbox" | "onedrive";
+export type SUPPORTED_SERVICES_TYPE = "s3" | "webdav" | "dropbox" | "onedrive" | "django";
 
 export type SUPPORTED_SERVICES_TYPE_WITH_REMOTE_BASE_DIR =
   | "webdav"
   | "dropbox"
-  | "onedrive";
+  | "onedrive"
+  | "django";
 
 export interface S3Config {
   s3Endpoint: string;
@@ -70,11 +71,24 @@ export interface OnedriveConfig {
   remoteBaseDir?: string;
 }
 
+export interface DjangoConfig {
+  endpoint: string;
+  username: string;
+  password: string;
+  accessToken?: string;
+  refreshToken?: string;
+  accessTokenExpiresInSeconds?: number;
+  accessTokenExpiresAtTime?: number;
+  remoteBaseDir?: string;
+  useInternalAuth?: boolean; // Whether to use internal JWT auth or basic auth
+}
+
 export interface RemotelySavePluginSettings {
   s3: S3Config;
   webdav: WebdavConfig;
   dropbox: DropboxConfig;
   onedrive: OnedriveConfig;
+  django: DjangoConfig;
   password: string;
   serviceType: SUPPORTED_SERVICES_TYPE;
   debugEnabled?: boolean;

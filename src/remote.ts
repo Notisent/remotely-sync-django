@@ -5,11 +5,13 @@ import type {
   S3Config,
   SUPPORTED_SERVICES_TYPE,
   WebdavConfig,
+  DjangoConfig,
 } from "./baseTypes";
 import * as dropbox from "./remoteForDropbox";
 import * as onedrive from "./remoteForOnedrive";
 import * as s3 from "./remoteForS3";
 import * as webdav from "./remoteForWebdav";
+import * as django from "./remoteForDjango";
 
 import { log } from "./moreOnLog";
 
@@ -22,6 +24,8 @@ export class RemoteClient {
   readonly dropboxConfig?: DropboxConfig;
   readonly onedriveClient?: onedrive.WrappedOnedriveClient;
   readonly onedriveConfig?: OnedriveConfig;
+  readonly djangoClient?: django.WrappedDjangoClient;
+  readonly djangoConfig?: DjangoConfig;
 
   constructor(
     serviceType: SUPPORTED_SERVICES_TYPE,
@@ -29,6 +33,7 @@ export class RemoteClient {
     webdavConfig?: WebdavConfig,
     dropboxConfig?: DropboxConfig,
     onedriveConfig?: OnedriveConfig,
+    djangoConfig?: DjangoConfig,
     vaultName?: string,
     saveUpdatedConfigFunc?: () => Promise<any>
   ) {
@@ -73,6 +78,19 @@ export class RemoteClient {
       this.onedriveConfig = onedriveConfig;
       this.onedriveClient = onedrive.getOnedriveClient(
         this.onedriveConfig,
+        remoteBaseDir,
+        saveUpdatedConfigFunc
+      );
+    } else if (serviceType === "django") {
+      if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
+        throw Error(
+          "remember to provide vault name and callback while init django client"
+        );
+      }
+      const remoteBaseDir = djangoConfig.remoteBaseDir || vaultName;
+      this.djangoConfig = djangoConfig;
+      this.djangoClient = django.getDjangoClient(
+        this.djangoConfig,
         remoteBaseDir,
         saveUpdatedConfigFunc
       );
@@ -138,6 +156,17 @@ export class RemoteClient {
         uploadRaw,
         rawContent
       );
+    } else if (this.serviceType === "django") {
+      return await django.uploadToRemote(
+        this.djangoClient,
+        fileOrFolderPath,
+        vault,
+        isRecursively,
+        password,
+        remoteEncryptedKey,
+        uploadRaw,
+        rawContent
+      );
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
@@ -156,6 +185,8 @@ export class RemoteClient {
       return await dropbox.listFromRemote(this.dropboxClient, prefix);
     } else if (this.serviceType === "onedrive") {
       return await onedrive.listFromRemote(this.onedriveClient, prefix);
+    } else if (this.serviceType === "django") {
+      return await django.listFromRemote(this.djangoClient, prefix);
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
@@ -210,6 +241,16 @@ export class RemoteClient {
         remoteEncryptedKey,
         skipSaving
       );
+    } else if (this.serviceType === "django") {
+      return await django.downloadFromRemote(
+        this.djangoClient,
+        fileOrFolderPath,
+        vault,
+        mtime,
+        password,
+        remoteEncryptedKey,
+        skipSaving
+      );
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
@@ -249,6 +290,13 @@ export class RemoteClient {
         password,
         remoteEncryptedKey
       );
+    } else if (this.serviceType === "django") {
+      return await django.deleteFromRemote(
+        this.djangoClient,
+        fileOrFolderPath,
+        password,
+        remoteEncryptedKey
+      );
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
@@ -270,6 +318,8 @@ export class RemoteClient {
         this.onedriveClient,
         callbackFunc
       );
+    } else if (this.serviceType === "django") {
+      return await django.checkConnectivity(this.djangoClient, callbackFunc);
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
@@ -280,6 +330,8 @@ export class RemoteClient {
       return await dropbox.getUserDisplayName(this.dropboxClient);
     } else if (this.serviceType === "onedrive") {
       return await onedrive.getUserDisplayName(this.onedriveClient);
+    } else if (this.serviceType === "django") {
+      return await django.getUserDisplayName(this.djangoClient);
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
@@ -288,6 +340,8 @@ export class RemoteClient {
   revokeAuth = async () => {
     if (this.serviceType === "dropbox") {
       return await dropbox.revokeAuth(this.dropboxClient);
+    } else if (this.serviceType === "django") {
+      return await django.revokeAuth(this.djangoClient);
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
