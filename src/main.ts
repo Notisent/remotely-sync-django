@@ -46,6 +46,7 @@ import {
 } from "./remoteForOnedrive";
 import { DEFAULT_S3_CONFIG } from "./remoteForS3";
 import { DEFAULT_WEBDAV_CONFIG } from "./remoteForWebdav";
+import { DEFAULT_DJANGO_CONFIG } from "./remoteForDjango";
 import { RemotelySaveSettingTab } from "./settings";
 import { 
   getRemoteMetadata, 
@@ -79,6 +80,7 @@ const DEFAULT_SETTINGS: RemotelySavePluginSettings = {
   webdav: DEFAULT_WEBDAV_CONFIG,
   dropbox: DEFAULT_DROPBOX_CONFIG,
   onedrive: DEFAULT_ONEDRIVE_CONFIG,
+  django: DEFAULT_DJANGO_CONFIG,
   password: "",
   serviceType: "s3",
   debugEnabled: false,

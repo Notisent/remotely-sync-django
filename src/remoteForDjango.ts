@@ -1,252 +1,241 @@
 import { Buffer } from "buffer";
-import { Vault, requestUrl } from "obsidian";
-import { DjangoConfig, RemoteItem, VALID_REQURL } from "./baseTypes";
+import { requestUrl, RequestUrlParam, Vault } from "obsidian";
+import type {
+  RemoteItem,
+  SUPPORTED_SERVICES_TYPE,
+  DjangoConfig,
+} from "./baseTypes";
 import { decryptArrayBuffer, encryptArrayBuffer } from "./encrypt";
-import { bufferToArrayBuffer, getPathFolder, mkdirpInVault } from "./misc";
-import { log } from "./moreOnLog";
+import { bufferToArrayBuffer, mkdirpInVault } from "./misc";
 
-export const DEFAULT_DJANGO_CONFIG = {
+export { DjangoConfig };
+
+export const DEFAULT_DJANGO_CONFIG: DjangoConfig = {
   endpoint: "",
   username: "",
   password: "",
+  accessToken: "",
+  refreshToken: "",
+  accessTokenExpiresInSeconds: 3600,
+  accessTokenExpiresAtTime: 0,
   remoteBaseDir: "",
-  useInternalAuth: false,
-} as DjangoConfig;
-
-const getDjangoPath = (fileOrFolderPath: string, remoteBaseDir: string) => {
-  let key = fileOrFolderPath;
-  if (fileOrFolderPath === "/" || fileOrFolderPath === "") {
-    key = `${remoteBaseDir}/`;
-  }
-  if (!fileOrFolderPath.startsWith("/")) {
-    key = `${remoteBaseDir}/${fileOrFolderPath}`;
-  }
-  return key;
-};
-
-const getNormPath = (fileOrFolderPath: string, remoteBaseDir: string) => {
-  if (
-    !(
-      fileOrFolderPath === `${remoteBaseDir}` ||
-      fileOrFolderPath.startsWith(`${remoteBaseDir}/`)
-    )
-  ) {
-    throw Error(
-      `"${fileOrFolderPath}" doesn't start with "${remoteBaseDir}/"`
-    );
-  }
-  return fileOrFolderPath.slice(`${remoteBaseDir}/`.length);
-};
-
-const fromDjangoItemToRemoteItem = (item: any, remoteBaseDir: string): RemoteItem => {
-  let key = getNormPath(item.key, remoteBaseDir);
-  if (item.is_directory && !key.endsWith("/")) {
-    key = `${key}/`;
-  }
-  return {
-    key: key,
-    lastModified: new Date(item.last_modified).getTime(),
-    size: item.size || 0,
-    remoteType: "django" as const,
-    etag: item.etag || undefined,
-  };
+  useInternalAuth: true,
 };
 
 export class WrappedDjangoClient {
-  djangoConfig: DjangoConfig;
-  remoteBaseDir: string;
-  accessToken: string | null;
-  tokenExpiresAt: number;
-  vaultFolderExists: boolean;
-  saveUpdatedConfigFunc: () => Promise<any>;
+  public readonly endpoint: string;
+  public readonly username: string;
+  private readonly password: string;
+  public accessToken: string;
+  public refreshToken: string;
+  public accessTokenExpiresAt: number;
+  public readonly remoteBaseDir: string;
+  public readonly saveUpdatedConfigFunc: () => Promise<any>;
 
   constructor(
-    djangoConfig: DjangoConfig,
+    endpoint: string,
+    username: string,
+    password: string,
     remoteBaseDir: string,
-    saveUpdatedConfigFunc: () => Promise<any>
+    saveUpdatedConfigFunc: () => Promise<any>,
+    accessToken?: string,
+    refreshToken?: string,
+    accessTokenExpiresInSeconds?: number,
+    accessTokenExpiresAtTime?: number
   ) {
-    this.djangoConfig = djangoConfig;
-    this.remoteBaseDir = remoteBaseDir;
-    this.accessToken = djangoConfig.accessToken || null;
-    this.tokenExpiresAt = djangoConfig.accessTokenExpiresAtTime || 0;
-    this.vaultFolderExists = false;
+    this.endpoint = endpoint.replace(/\/$/, ""); // Remove trailing slash
+    this.username = username;
+    this.password = password;
+    this.remoteBaseDir = remoteBaseDir || "";
     this.saveUpdatedConfigFunc = saveUpdatedConfigFunc;
+    
+    this.accessToken = accessToken || "";
+    this.refreshToken = refreshToken || "";
+    this.accessTokenExpiresAt = accessTokenExpiresAtTime || 0;
   }
 
-  init = async () => {
-    // Get or refresh access token
-    await this.ensureValidToken();
-
-    // Check if vault folder exists
-    if (!this.vaultFolderExists) {
-      const folderExists = await this.checkFolderExists(this.remoteBaseDir);
-      if (!folderExists) {
-        await this.createFolder(this.remoteBaseDir);
-      }
-      this.vaultFolderExists = true;
-    }
-  };
-
-  private async ensureValidToken() {
-    const now = Date.now();
-    if (this.accessToken && now < this.tokenExpiresAt - 30000) {
-      // Token is still valid (with 30s buffer)
-      return;
+  private async authenticateWithCredentials(): Promise<boolean> {
+    if (!this.username || !this.password) {
+      throw new Error("Username and password are required for authentication");
     }
 
-    await this.authenticateWithDjango();
-  }
-
-  private async authenticateWithDjango() {
-    if (!this.djangoConfig.endpoint) {
-      throw new Error("Django endpoint URL is not configured");
-    }
-    
-    if (!this.djangoConfig.username || !this.djangoConfig.password) {
-      throw new Error("Django username and password are required for authentication");
-    }
-
-    const loginUrl = `${this.djangoConfig.endpoint}/api/token/`;
-    
     try {
       const response = await requestUrl({
-        url: loginUrl,
+        url: `${this.endpoint}/api/token/`,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          username: this.djangoConfig.username,
-          password: this.djangoConfig.password,
+          username: this.username,
+          password: this.password,
         }),
       });
 
-      if (response.status === 400) {
-        throw new Error("Invalid username or password");
-      } else if (response.status === 401) {
-        throw new Error("Authentication failed: Invalid credentials");
-      } else if (response.status === 403) {
-        throw new Error("Authentication failed: Access denied");
-      } else if (response.status === 404) {
-        throw new Error("Authentication endpoint not found. Please check your Django server URL");
-      } else if (response.status >= 500) {
-        throw new Error(`Django server error: ${response.status}. Please try again later`);
-      } else if (response.status !== 200) {
-        throw new Error(`Django authentication failed with status ${response.status}`);
+      if (response.status === 200) {
+        const data = response.json;
+        this.accessToken = data.access;
+        this.refreshToken = data.refresh;
+        // JWT tokens typically expire in 1 hour (3600 seconds)
+        this.accessTokenExpiresAt = Date.now() + (3600 * 1000);
+        
+        // Save updated tokens
+        await this.saveUpdatedConfigFunc();
+        
+        return true;
+      } else {
+        throw new Error(`Authentication failed: ${response.status}`);
       }
-
-      const data = response.json;
-      if (!data.access) {
-        throw new Error("Invalid response from Django server: missing access token");
-      }
-
-      this.accessToken = data.access;
-      this.tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
-
-      // Update config
-      this.djangoConfig.accessToken = this.accessToken;
-      this.djangoConfig.accessTokenExpiresAtTime = this.tokenExpiresAt;
-      await this.saveUpdatedConfigFunc();
     } catch (error) {
-      if (error instanceof Error) {
-        // Re-throw our custom errors
-        throw error;
-      }
-      
-      // Handle network errors
-      if (error.message?.includes("fetch")) {
-        throw new Error(`Network error: Unable to connect to Django server at ${this.djangoConfig.endpoint}`);
-      }
-      
-      throw new Error(`Authentication failed: ${error.message || "Unknown error"}`);
+      throw new Error(`Authentication error: ${error.message}`);
     }
   }
 
-  async makeAuthenticatedRequest(
-    url: string,
-    method: string = "GET",
-    body?: any,
-    headers?: Record<string, string>
-  ) {
-    await this.ensureValidToken();
-
-    const requestHeaders = {
-      "Authorization": `Bearer ${this.accessToken}`,
-      "Content-Type": "application/json",
-      ...headers,
-    };
-
-    const fullUrl = `${this.djangoConfig.endpoint}${url}`;
+  private async refreshAccessToken(): Promise<boolean> {
+    if (!this.refreshToken) {
+      return false;
+    }
 
     try {
       const response = await requestUrl({
-        url: fullUrl,
-        method,
-        headers: requestHeaders,
-        body: body ? JSON.stringify(body) : undefined,
+        url: `${this.endpoint}/api/token/refresh/`,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          refresh: this.refreshToken,
+        }),
       });
 
-      if (response.status === 401) {
-        // Token expired, try to refresh
-        await this.authenticateWithDjango();
+      if (response.status === 200) {
+        const data = response.json;
+        this.accessToken = data.access;
+        this.accessTokenExpiresAt = Date.now() + (3600 * 1000);
         
-        // Retry with new token
-        const retryHeaders = {
-          "Authorization": `Bearer ${this.accessToken}`,
-          "Content-Type": "application/json",
-          ...headers,
-        };
-
-        return await requestUrl({
-          url: fullUrl,
-          method,
-          headers: retryHeaders,
-          body: body ? JSON.stringify(body) : undefined,
-        });
+        // Save updated tokens
+        await this.saveUpdatedConfigFunc();
+        
+        return true;
       }
+    } catch (error) {
+      console.error("Token refresh failed:", error);
+    }
+    
+    return false;
+  }
 
+  private async ensureValidToken(): Promise<void> {
+    // Check if we have a token and it's not expired (with 5-minute buffer)
+    const bufferTime = 5 * 60 * 1000; // 5 minutes in milliseconds
+    const needsRefresh = !this.accessToken || (Date.now() + bufferTime) >= this.accessTokenExpiresAt;
+
+    if (needsRefresh) {
+      // Try to refresh first if we have a refresh token
+      if (this.refreshToken) {
+        const refreshed = await this.refreshAccessToken();
+        if (refreshed) {
+          return;
+        }
+      }
+      
+      // If refresh failed or no refresh token, authenticate with credentials
+      await this.authenticateWithCredentials();
+    }
+  }
+
+  public async makeAuthenticatedRequest(params: RequestUrlParam): Promise<any> {
+    await this.ensureValidToken();
+
+    const requestParams: RequestUrlParam = {
+      ...params,
+      headers: {
+        ...params.headers,
+        Authorization: `Bearer ${this.accessToken}`,
+      },
+    };
+
+    try {
+      const response = await requestUrl(requestParams);
+      
+      if (response.status === 401) {
+        // Token might be invalid, try to re-authenticate
+        await this.authenticateWithCredentials();
+        requestParams.headers.Authorization = `Bearer ${this.accessToken}`;
+        return await requestUrl(requestParams);
+      }
+      
       return response;
     } catch (error) {
-      // Handle network errors
-      if (error.message?.includes("fetch") || error.message?.includes("network")) {
-        throw new Error(`Network error: Unable to connect to Django server at ${this.djangoConfig.endpoint}`);
+      // Enhanced error handling for different HTTP status codes
+      if (error.status) {
+        switch (error.status) {
+          case 400:
+            throw new Error(`Bad request: ${error.message || 'Invalid request parameters'}`);
+          case 401:
+            throw new Error(`Authentication failed: ${error.message || 'Invalid credentials'}`);
+          case 403:
+            throw new Error(`Access denied: ${error.message || 'Insufficient permissions'}`);
+          case 404:
+            throw new Error(`Not found: ${error.message || 'Resource not found'}`);
+          case 500:
+          case 502:
+          case 503:
+          case 504:
+            throw new Error(`Server error: ${error.message || 'Internal server error'}`);
+          default:
+            throw new Error(`HTTP ${error.status}: ${error.message || 'Unknown error'}`);
+        }
       }
       
-      // Handle timeout errors
-      if (error.message?.includes("timeout")) {
-        throw new Error(`Request timeout: Django server at ${this.djangoConfig.endpoint} is not responding`);
+      // Network or other errors
+      if (error.message?.includes('NetworkError') || error.message?.includes('fetch')) {
+        throw new Error(`Network error: Unable to connect to ${this.endpoint}. Please check your connection and server URL.`);
       }
       
-      throw new Error(`Request failed: ${error.message || "Unknown error"}`);
+      throw new Error(`Request failed: ${error.message || 'Unknown error'}`);
     }
   }
 
-  private async checkFolderExists(path: string): Promise<boolean> {
-    try {
-      const response = await this.makeAuthenticatedRequest(
-        `/api/sync/files/?path=${encodeURIComponent(path)}&type=folder`
-      );
-      return response.status === 200;
-    } catch (error) {
-      return false;
+  public buildPath(path: string): string {
+    // Ensure path starts with remoteBaseDir if specified
+    if (this.remoteBaseDir && !path.startsWith(this.remoteBaseDir)) {
+      return `${this.remoteBaseDir}/${path}`.replace(/\/+/g, "/");
     }
+    return path;
   }
 
-  async createFolder(path: string): Promise<void> {
-    await this.makeAuthenticatedRequest(
-      `/api/sync/folders/`,
-      "POST",
-      { path }
-    );
+  // Getter methods for accessing token information
+  getAccessToken(): string {
+    return this.accessToken;
+  }
+
+  getRefreshToken(): string {
+    return this.refreshToken;
+  }
+
+  getAccessTokenExpiresAt(): number {
+    return this.accessTokenExpiresAt;
   }
 }
 
+// Export functions that match the expected interface
 export const getDjangoClient = (
   djangoConfig: DjangoConfig,
   remoteBaseDir: string,
   saveUpdatedConfigFunc: () => Promise<any>
-) => {
-  return new WrappedDjangoClient(djangoConfig, remoteBaseDir, saveUpdatedConfigFunc);
+): WrappedDjangoClient => {
+  return new WrappedDjangoClient(
+    djangoConfig.endpoint,
+    djangoConfig.username,
+    djangoConfig.password,
+    remoteBaseDir,
+    saveUpdatedConfigFunc,
+    djangoConfig.accessToken,
+    djangoConfig.refreshToken,
+    djangoConfig.accessTokenExpiresInSeconds,
+    djangoConfig.accessTokenExpiresAtTime
+  );
 };
 
 export const uploadToRemote = async (
@@ -259,9 +248,7 @@ export const uploadToRemote = async (
   uploadRaw: boolean = false,
   rawContent: string | ArrayBuffer = ""
 ): Promise<RemoteItem> => {
-  await client.init();
-
-  const remotePath = getDjangoPath(fileOrFolderPath, client.remoteBaseDir);
+  const path = client.buildPath(fileOrFolderPath);
   
   let content: ArrayBuffer;
   if (uploadRaw) {
@@ -270,80 +257,104 @@ export const uploadToRemote = async (
       : rawContent;
   } else {
     if (fileOrFolderPath.endsWith("/")) {
-      // It's a folder
-      await client.createFolder(remotePath);
-      return {
-        key: fileOrFolderPath,
-        lastModified: Date.now(),
-        size: 0,
-        remoteType: "django",
-      };
+      // It's a folder - create empty content
+      content = new ArrayBuffer(0);
+    } else {
+      // It's a file
+      content = await vault.adapter.readBinary(fileOrFolderPath);
     }
-    
-    // It's a file
-    content = await vault.adapter.readBinary(fileOrFolderPath);
   }
 
   // Encrypt if password is provided
   if (password !== "") {
-    content = await encryptArrayBuffer(content, password, remoteEncryptedKey);
+    content = await encryptArrayBuffer(content, password);
   }
 
-  // Convert to base64 for JSON transport
-  const base64Content = Buffer.from(new Uint8Array(content)).toString('base64');
+  // Convert content to base64 for JSON transport
+  const base64Content = Buffer.from(content).toString("base64");
 
-  const response = await client.makeAuthenticatedRequest(
-    `/api/sync/files/`,
-    "POST",
-    {
-      path: remotePath,
-      content: base64Content,
-      encrypted: password !== "",
+  const requestData = {
+    path: path,
+    content: base64Content,
+    content_type: "application/octet-stream",
+    is_encrypted: !!password,
+    encryption_key: remoteEncryptedKey || "",
+    raw_size: content.byteLength,
+    encrypted_size: content.byteLength,
+  };
+
+  try {
+    const response = await client.makeAuthenticatedRequest({
+      url: `${client.endpoint}/api/sync/files/`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestData),
+    });
+
+    if (response.status === 200 || response.status === 201) {
+      return {
+        key: fileOrFolderPath,
+        lastModified: Date.now(),
+        size: content.byteLength,
+        remoteType: "django",
+        etag: response.json.id.toString(),
+      };
+    } else {
+      throw new Error(`Upload failed with status ${response.status}`);
     }
-  );
-
-  if (response.status === 400) {
-    throw new Error("Bad request: Invalid file data or path");
-  } else if (response.status === 403) {
-    throw new Error("Access denied: You don't have permission to upload files");
-  } else if (response.status === 404) {
-    throw new Error("Upload endpoint not found. Please check your Django server configuration");
-  } else if (response.status === 413) {
-    throw new Error("File too large: The file exceeds the maximum upload size");
-  } else if (response.status >= 500) {
-    throw new Error(`Django server error: ${response.status}. Please try again later`);
-  } else if (response.status !== 200 && response.status !== 201) {
-    throw new Error(`Failed to upload file: HTTP ${response.status}`);
+  } catch (error) {
+    if (error.message?.includes('Bad request')) {
+      throw new Error(`Upload failed: ${error.message}. Please check the file content and try again.`);
+    } else if (error.message?.includes('Access denied')) {
+      throw new Error(`Upload failed: Access denied. Please check your permissions.`);
+    } else if (error.message?.includes('Server error')) {
+      throw new Error(`Upload failed: ${error.message}. Please try again later.`);
+    }
+    throw new Error(`Upload failed: ${error.message}`);
   }
-
-  const result = response.json;
-  return fromDjangoItemToRemoteItem(result, client.remoteBaseDir);
 };
 
 export const listFromRemote = async (
   client: WrappedDjangoClient,
   prefix?: string
 ): Promise<RemoteItem[]> => {
-  await client.init();
-
-  const path = prefix ? getDjangoPath(prefix, client.remoteBaseDir) : client.remoteBaseDir;
+  const searchPrefix = prefix ? client.buildPath(prefix) : client.remoteBaseDir;
   
-  const response = await client.makeAuthenticatedRequest(
-    `/api/sync/files/?path=${encodeURIComponent(path)}`
-  );
+  try {
+    const response = await client.makeAuthenticatedRequest({
+      url: `${client.endpoint}/api/sync/files/`,
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
 
-  if (response.status === 403) {
-    throw new Error("Access denied: You don't have permission to list files");
-  } else if (response.status === 404) {
-    throw new Error("Path not found or list endpoint not available");
-  } else if (response.status >= 500) {
-    throw new Error(`Django server error: ${response.status}. Please try again later`);
-  } else if (response.status !== 200) {
-    throw new Error(`Failed to list files: HTTP ${response.status}`);
+    if (response.status === 200) {
+      const data = response.json;
+      const results = data.results || [];
+      
+      return results
+        .filter((item: any) => !searchPrefix || item.path.startsWith(searchPrefix))
+        .map((item: any) => ({
+          key: item.path.replace(client.remoteBaseDir + "/", "").replace(client.remoteBaseDir, ""),
+          lastModified: new Date(item.modified_at).getTime(),
+          size: item.raw_size || 0,
+          remoteType: "django" as SUPPORTED_SERVICES_TYPE,
+          etag: item.id.toString(),
+        }));
+    } else {
+      throw new Error(`List operation failed with status ${response.status}`);
+    }
+  } catch (error) {
+    if (error.message?.includes('Access denied')) {
+      throw new Error(`List failed: Access denied. Please check your permissions.`);
+    } else if (error.message?.includes('Server error')) {
+      throw new Error(`List failed: ${error.message}. Please try again later.`);
+    }
+    throw new Error(`List failed: ${error.message}`);
   }
-
-  const items = response.json.results || response.json;
-  return items.map((item: any) => fromDjangoItemToRemoteItem(item, client.remoteBaseDir));
 };
 
 export const downloadFromRemote = async (
@@ -355,44 +366,59 @@ export const downloadFromRemote = async (
   remoteEncryptedKey: string = "",
   skipSaving: boolean = false
 ): Promise<RemoteItem> => {
-  await client.init();
-
-  const remotePath = getDjangoPath(fileOrFolderPath, client.remoteBaseDir);
+  const path = client.buildPath(fileOrFolderPath);
   
-  const response = await client.makeAuthenticatedRequest(
-    `/api/sync/files/${encodeURIComponent(remotePath)}/`
-  );
+  try {
+    const response = await client.makeAuthenticatedRequest({
+      url: `${client.endpoint}/api/sync/files/${encodeURIComponent(path)}/`,
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
 
-  if (response.status === 403) {
-    throw new Error("Access denied: You don't have permission to download this file");
-  } else if (response.status === 404) {
-    throw new Error("File not found: The requested file does not exist");
-  } else if (response.status >= 500) {
-    throw new Error(`Django server error: ${response.status}. Please try again later`);
-  } else if (response.status !== 200) {
-    throw new Error(`Failed to download file: HTTP ${response.status}`);
-  }
+    if (response.status === 200) {
+      const data = response.json;
+      
+      // Decode base64 content
+      let content = Buffer.from(data.content, "base64");
+      
+             // Decrypt if password is provided
+       if (password !== "" && data.is_encrypted) {
+         const decryptedBuffer = await decryptArrayBuffer(content.buffer, password);
+         content = Buffer.from(decryptedBuffer);
+       }
 
-  const result = response.json;
-  let content = Buffer.from(result.content, 'base64');
+      if (!skipSaving) {
+        if (fileOrFolderPath.endsWith("/")) {
+          // It's a folder
+          await mkdirpInVault(fileOrFolderPath, vault);
+        } else {
+          // It's a file
+          await vault.adapter.writeBinary(fileOrFolderPath, content.buffer);
+        }
+      }
 
-  // Decrypt if password is provided
-  if (password !== "" && result.encrypted) {
-    const decryptedBuffer = await decryptArrayBuffer(content.buffer, password, remoteEncryptedKey);
-    content = Buffer.from(new Uint8Array(decryptedBuffer));
-  }
-
-  if (!skipSaving) {
-    if (fileOrFolderPath.endsWith("/")) {
-      // It's a folder
-      await mkdirpInVault(fileOrFolderPath, vault);
+      return {
+        key: fileOrFolderPath,
+        lastModified: new Date(data.modified_at).getTime(),
+        size: data.raw_size || 0,
+        remoteType: "django",
+        etag: data.id.toString(),
+      };
     } else {
-      // It's a file
-      await vault.adapter.writeBinary(fileOrFolderPath, content.buffer);
+      throw new Error(`Download failed with status ${response.status}`);
     }
+  } catch (error) {
+    if (error.message?.includes('Not found')) {
+      throw new Error(`Download failed: File '${fileOrFolderPath}' not found.`);
+    } else if (error.message?.includes('Access denied')) {
+      throw new Error(`Download failed: Access denied. Please check your permissions.`);
+    } else if (error.message?.includes('Server error')) {
+      throw new Error(`Download failed: ${error.message}. Please try again later.`);
+    }
+    throw new Error(`Download failed: ${error.message}`);
   }
-
-  return fromDjangoItemToRemoteItem(result, client.remoteBaseDir);
 };
 
 export const deleteFromRemote = async (
@@ -401,23 +427,32 @@ export const deleteFromRemote = async (
   password: string = "",
   remoteEncryptedKey: string = ""
 ): Promise<void> => {
-  await client.init();
-
-  const remotePath = getDjangoPath(fileOrFolderPath, client.remoteBaseDir);
+  const path = client.buildPath(fileOrFolderPath);
   
-  const response = await client.makeAuthenticatedRequest(
-    `/api/sync/files/${encodeURIComponent(remotePath)}/`,
-    "DELETE"
-  );
+  try {
+    const response = await client.makeAuthenticatedRequest({
+      url: `${client.endpoint}/api/sync/files/${encodeURIComponent(path)}/`,
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
 
-  if (response.status === 403) {
-    throw new Error("Access denied: You don't have permission to delete this file");
-  } else if (response.status === 404) {
-    throw new Error("File not found: The file to delete does not exist");
-  } else if (response.status >= 500) {
-    throw new Error(`Django server error: ${response.status}. Please try again later`);
-  } else if (response.status !== 204 && response.status !== 200) {
-    throw new Error(`Failed to delete file: HTTP ${response.status}`);
+    if (response.status === 204 || response.status === 200) {
+      return;
+    } else {
+      throw new Error(`Delete failed with status ${response.status}`);
+    }
+  } catch (error) {
+    if (error.message?.includes('Not found')) {
+      // File already doesn't exist, consider it a success
+      return;
+    } else if (error.message?.includes('Access denied')) {
+      throw new Error(`Delete failed: Access denied. Please check your permissions.`);
+    } else if (error.message?.includes('Server error')) {
+      throw new Error(`Delete failed: ${error.message}. Please try again later.`);
+    }
+    throw new Error(`Delete failed: ${error.message}`);
   }
 };
 
@@ -426,19 +461,25 @@ export const checkConnectivity = async (
   callbackFunc?: any
 ): Promise<boolean> => {
   try {
-    await client.init();
-    
-    const response = await client.makeAuthenticatedRequest(`/api/sync/health/`);
+    const response = await client.makeAuthenticatedRequest({
+      url: `${client.endpoint}/api/sync/health/`,
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    const isConnected = response.status === 200;
     
     if (callbackFunc) {
-      if (response.status === 200) {
+      if (isConnected) {
         callbackFunc("Connection successful");
       } else {
         callbackFunc(`Connection failed: HTTP ${response.status}`);
       }
     }
-    
-    return response.status === 200;
+
+    return isConnected;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown connection error";
     
@@ -453,24 +494,32 @@ export const checkConnectivity = async (
 export const getUserDisplayName = async (
   client: WrappedDjangoClient
 ): Promise<string> => {
-  await client.init();
-  
-  const response = await client.makeAuthenticatedRequest(`/api/user/profile/`);
-  
-  if (response.status === 200) {
-    const result = response.json;
-    return result.username || result.email || "Django User";
+  try {
+    const response = await client.makeAuthenticatedRequest({
+      url: `${client.endpoint}/api/sync/health/`,
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 200) {
+      return response.json.user || client.username;
+    }
+  } catch (error) {
+    console.warn("Failed to get user display name:", error);
   }
   
-  return "Django User";
+  return client.username;
 };
 
 export const revokeAuth = async (
   client: WrappedDjangoClient
 ): Promise<void> => {
-  client.accessToken = null;
-  client.tokenExpiresAt = 0;
-  client.djangoConfig.accessToken = null;
-  client.djangoConfig.accessTokenExpiresAtTime = 0;
+  // For Django JWT, we can't really "revoke" the token server-side without additional setup
+  // Just clear local tokens
+  client.accessToken = "";
+  client.refreshToken = "";
+  client.accessTokenExpiresAt = 0;
   await client.saveUpdatedConfigFunc();
 }; 
