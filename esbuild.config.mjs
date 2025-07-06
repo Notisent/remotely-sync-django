@@ -17,42 +17,51 @@ const DEFAULT_DROPBOX_APP_KEY = process.env.DROPBOX_APP_KEY || "";
 const DEFAULT_ONEDRIVE_CLIENT_ID = process.env.ONEDRIVE_CLIENT_ID || "";
 const DEFAULT_ONEDRIVE_AUTHORITY = process.env.ONEDRIVE_AUTHORITY || "";
 
-esbuild
-  .build({
-    banner: {
-      js: banner,
-    },
-    loader: {
-      ".svg": "text",
-    },
-    entryPoints: ["./src/main.ts"],
-    bundle: true,
-    external: [
-      "obsidian",
-      "electron",
-      "fs",
-      "tls",
-      "net",
-      "http",
-      "https",
-      // ...builtins
-    ],
-    inject: ["./esbuild.injecthelper.mjs"],
-    format: "cjs",
-    watch: !prod,
-    target: "esnext",
-    logLevel: "info",
-    sourcemap: prod ? false : "inline",
-    treeShaking: true,
-    minify: prod,
-    outfile: "main.js",
-    define: {
-      "process.env.DEFAULT_DROPBOX_APP_KEY": `"${DEFAULT_DROPBOX_APP_KEY}"`,
-      "process.env.DEFAULT_ONEDRIVE_CLIENT_ID": `"${DEFAULT_ONEDRIVE_CLIENT_ID}"`,
-      "process.env.DEFAULT_ONEDRIVE_AUTHORITY": `"${DEFAULT_ONEDRIVE_AUTHORITY}"`,
-      global: "window",
-      "process.env.NODE_DEBUG": `undefined`, // ugly fix
-      "process.env.DEBUG": `undefined`, // ugly fix
-    },
-  })
-  .catch(() => process.exit(1));
+const buildOptions = {
+  banner: {
+    js: banner,
+  },
+  loader: {
+    ".svg": "text",
+  },
+  entryPoints: ["./src/main.ts"],
+  bundle: true,
+  external: [
+    "obsidian",
+    "electron",
+    "fs",
+    "tls",
+    "net",
+    "http",
+    "https",
+    "stream",
+    // ...builtins
+  ],
+  inject: ["./esbuild.injecthelper.mjs"],
+  format: "cjs",
+  target: "esnext",
+  logLevel: "info",
+  sourcemap: prod ? false : "inline",
+  treeShaking: true,
+  minify: prod,
+  outfile: "main.js",
+  define: {
+    "process.env.DEFAULT_DROPBOX_APP_KEY": `"${DEFAULT_DROPBOX_APP_KEY}"`,
+    "process.env.DEFAULT_ONEDRIVE_CLIENT_ID": `"${DEFAULT_ONEDRIVE_CLIENT_ID}"`,
+    "process.env.DEFAULT_ONEDRIVE_AUTHORITY": `"${DEFAULT_ONEDRIVE_AUTHORITY}"`,
+    global: "window",
+    "process.env.NODE_DEBUG": `undefined`, // ugly fix
+    "process.env.DEBUG": `undefined`, // ugly fix
+  },
+};
+
+if (prod) {
+  // Production build
+  esbuild.build(buildOptions).catch(() => process.exit(1));
+} else {
+  // Development build with watch
+  esbuild.context(buildOptions).then((ctx) => {
+    ctx.watch();
+    console.log("👀 Watching for changes...");
+  }).catch(() => process.exit(1));
+}
