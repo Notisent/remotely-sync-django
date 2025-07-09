@@ -439,6 +439,7 @@ export default class RemotelySavePlugin extends Plugin {
       this.settings.webdav,
       this.settings.dropbox,
       this.settings.onedrive,
+      this.settings.django,
       this.app.vault.getName(),
       () => self.saveSettings()
     );
@@ -666,6 +667,7 @@ export default class RemotelySavePlugin extends Plugin {
             undefined,
             this.settings.dropbox,
             undefined,
+            undefined,
             this.app.vault.getName(),
             () => self.saveSettings()
           );
@@ -752,6 +754,7 @@ export default class RemotelySavePlugin extends Plugin {
             undefined,
             undefined,
             this.settings.onedrive,
+            undefined,
             this.app.vault.getName(),
             () => self.saveSettings()
           );

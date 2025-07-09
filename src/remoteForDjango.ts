@@ -30,28 +30,35 @@ export class WrappedDjangoClient {
   public refreshToken: string;
   public accessTokenExpiresAt: number;
   public readonly remoteBaseDir: string;
+  private readonly djangoConfig: DjangoConfig;
   public readonly saveUpdatedConfigFunc: () => Promise<any>;
 
   constructor(
-    endpoint: string,
-    username: string,
-    password: string,
+    djangoConfig: DjangoConfig,
     remoteBaseDir: string,
-    saveUpdatedConfigFunc: () => Promise<any>,
-    accessToken?: string,
-    refreshToken?: string,
-    accessTokenExpiresInSeconds?: number,
-    accessTokenExpiresAtTime?: number
+    saveUpdatedConfigFunc: () => Promise<any>
   ) {
-    this.endpoint = endpoint.replace(/\/$/, ""); // Remove trailing slash
-    this.username = username;
-    this.password = password;
+    this.endpoint = djangoConfig.endpoint.replace(/\/$/, ""); // Remove trailing slash
+    this.username = djangoConfig.username;
+    this.password = djangoConfig.password;
     this.remoteBaseDir = remoteBaseDir || "";
+    this.djangoConfig = djangoConfig;
     this.saveUpdatedConfigFunc = saveUpdatedConfigFunc;
     
-    this.accessToken = accessToken || "";
-    this.refreshToken = refreshToken || "";
-    this.accessTokenExpiresAt = accessTokenExpiresAtTime || 0;
+    this.accessToken = djangoConfig.accessToken || "";
+    this.refreshToken = djangoConfig.refreshToken || "";
+    this.accessTokenExpiresAt = djangoConfig.accessTokenExpiresAtTime || 0;
+  }
+
+  public async updateConfigAndSave(): Promise<void> {
+    // Update the config object with current token values
+    this.djangoConfig.accessToken = this.accessToken;
+    this.djangoConfig.refreshToken = this.refreshToken;
+    this.djangoConfig.accessTokenExpiresAtTime = this.accessTokenExpiresAt;
+    this.djangoConfig.accessTokenExpiresInSeconds = 3600; // Standard JWT expiry
+    
+    // Save the updated configuration
+    await this.saveUpdatedConfigFunc();
   }
 
   private async authenticateWithCredentials(): Promise<boolean> {
@@ -79,8 +86,8 @@ export class WrappedDjangoClient {
         // JWT tokens typically expire in 1 hour (3600 seconds)
         this.accessTokenExpiresAt = Date.now() + (3600 * 1000);
         
-        // Save updated tokens
-        await this.saveUpdatedConfigFunc();
+        // Save updated tokens to config
+        await this.updateConfigAndSave();
         
         return true;
       } else {
@@ -113,8 +120,8 @@ export class WrappedDjangoClient {
         this.accessToken = data.access;
         this.accessTokenExpiresAt = Date.now() + (3600 * 1000);
         
-        // Save updated tokens
-        await this.saveUpdatedConfigFunc();
+        // Save updated tokens to config
+        await this.updateConfigAndSave();
         
         return true;
       }
@@ -226,15 +233,9 @@ export const getDjangoClient = (
   saveUpdatedConfigFunc: () => Promise<any>
 ): WrappedDjangoClient => {
   return new WrappedDjangoClient(
-    djangoConfig.endpoint,
-    djangoConfig.username,
-    djangoConfig.password,
+    djangoConfig,
     remoteBaseDir,
-    saveUpdatedConfigFunc,
-    djangoConfig.accessToken,
-    djangoConfig.refreshToken,
-    djangoConfig.accessTokenExpiresInSeconds,
-    djangoConfig.accessTokenExpiresAtTime
+    saveUpdatedConfigFunc
   );
 };
 
@@ -276,11 +277,9 @@ export const uploadToRemote = async (
   const requestData = {
     path: path,
     content: base64Content,
-    content_type: "application/octet-stream",
+    size: content.byteLength,
     is_encrypted: !!password,
-    encryption_key: remoteEncryptedKey || "",
-    raw_size: content.byteLength,
-    encrypted_size: content.byteLength,
+    is_directory: fileOrFolderPath.endsWith("/"),
   };
 
   try {
@@ -294,12 +293,14 @@ export const uploadToRemote = async (
     });
 
     if (response.status === 200 || response.status === 201) {
+      const responseData = response.json;
+      
       return {
         key: fileOrFolderPath,
-        lastModified: Date.now(),
+        lastModified: responseData.last_modified ? new Date(responseData.last_modified).getTime() : Date.now(),
         size: content.byteLength,
         remoteType: "django",
-        etag: response.json.id.toString(),
+        etag: responseData.id ? responseData.id.toString() : `${fileOrFolderPath}-${Date.now()}`,
       };
     } else {
       throw new Error(`Upload failed with status ${response.status}`);
@@ -319,7 +320,7 @@ export const uploadToRemote = async (
 export const listFromRemote = async (
   client: WrappedDjangoClient,
   prefix?: string
-): Promise<RemoteItem[]> => {
+): Promise<{ Contents: RemoteItem[] }> => {
   const searchPrefix = prefix ? client.buildPath(prefix) : client.remoteBaseDir;
   
   try {
@@ -335,19 +336,33 @@ export const listFromRemote = async (
       const data = response.json;
       const results = data.results || [];
       
-      return results
+      const contents = results
         .filter((item: any) => !searchPrefix || item.path.startsWith(searchPrefix))
-        .map((item: any) => ({
-          key: item.path.replace(client.remoteBaseDir + "/", "").replace(client.remoteBaseDir, ""),
-          lastModified: new Date(item.modified_at).getTime(),
-          size: item.raw_size || 0,
-          remoteType: "django" as SUPPORTED_SERVICES_TYPE,
-          etag: item.id.toString(),
-        }));
+        .map((item: any) => {
+          // Handle cases where id might be undefined (fallback safety)
+          let etag = "";
+          if (item.id !== undefined && item.id !== null) {
+            etag = item.id.toString();
+          } else {
+            // Generate a fallback etag based on path and modified time
+            etag = `${item.path}-${item.last_modified || Date.now()}`;
+          }
+          
+          return {
+            key: item.path.replace(client.remoteBaseDir + "/", "").replace(client.remoteBaseDir, ""),
+            lastModified: new Date(item.last_modified).getTime(),
+            size: item.size || 0,
+            remoteType: "django" as SUPPORTED_SERVICES_TYPE,
+            etag: etag,
+          };
+        });
+
+      return { Contents: contents };
     } else {
       throw new Error(`List operation failed with status ${response.status}`);
     }
   } catch (error) {
+    console.error("Django listFromRemote error:", error);
     if (error.message?.includes('Access denied')) {
       throw new Error(`List failed: Access denied. Please check your permissions.`);
     } else if (error.message?.includes('Server error')) {
@@ -365,12 +380,12 @@ export const downloadFromRemote = async (
   password: string = "",
   remoteEncryptedKey: string = "",
   skipSaving: boolean = false
-): Promise<RemoteItem> => {
+): Promise<ArrayBuffer> => {
   const path = client.buildPath(fileOrFolderPath);
   
   try {
     const response = await client.makeAuthenticatedRequest({
-      url: `${client.endpoint}/api/sync/files/${encodeURIComponent(path)}/`,
+      url: `${client.endpoint}/api/sync/files/?path=${encodeURIComponent(path)}`,
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -383,11 +398,11 @@ export const downloadFromRemote = async (
       // Decode base64 content
       let content = Buffer.from(data.content, "base64");
       
-             // Decrypt if password is provided
-       if (password !== "" && data.is_encrypted) {
-         const decryptedBuffer = await decryptArrayBuffer(content.buffer, password);
-         content = Buffer.from(decryptedBuffer);
-       }
+      // Decrypt if password is provided
+      if (password !== "" && data.is_encrypted) {
+        const decryptedBuffer = await decryptArrayBuffer(content.buffer, password);
+        content = Buffer.from(decryptedBuffer);
+      }
 
       if (!skipSaving) {
         if (fileOrFolderPath.endsWith("/")) {
@@ -395,21 +410,18 @@ export const downloadFromRemote = async (
           await mkdirpInVault(fileOrFolderPath, vault);
         } else {
           // It's a file
-          await vault.adapter.writeBinary(fileOrFolderPath, content.buffer);
+          await vault.adapter.writeBinary(fileOrFolderPath, content.buffer, {
+            mtime: mtime,
+          });
         }
       }
 
-      return {
-        key: fileOrFolderPath,
-        lastModified: new Date(data.modified_at).getTime(),
-        size: data.raw_size || 0,
-        remoteType: "django",
-        etag: data.id.toString(),
-      };
+      return content.buffer;
     } else {
       throw new Error(`Download failed with status ${response.status}`);
     }
   } catch (error) {
+    console.error("Django downloadFromRemote error:", error);
     if (error.message?.includes('Not found')) {
       throw new Error(`Download failed: File '${fileOrFolderPath}' not found.`);
     } else if (error.message?.includes('Access denied')) {
@@ -431,7 +443,7 @@ export const deleteFromRemote = async (
   
   try {
     const response = await client.makeAuthenticatedRequest({
-      url: `${client.endpoint}/api/sync/files/${encodeURIComponent(path)}/`,
+      url: `${client.endpoint}/api/sync/files/?path=${encodeURIComponent(path)}`,
       method: "DELETE",
       headers: {
         "Content-Type": "application/json",
@@ -521,5 +533,7 @@ export const revokeAuth = async (
   client.accessToken = "";
   client.refreshToken = "";
   client.accessTokenExpiresAt = 0;
-  await client.saveUpdatedConfigFunc();
+  
+  // Update config and save
+  await client.updateConfigAndSave();
 }; 

@@ -345,6 +345,7 @@ class DropboxAuthModal extends Modal {
                 undefined,
                 this.plugin.settings.dropbox,
                 undefined,
+                undefined,
                 this.app.vault.getName(),
                 () => self.plugin.saveSettings()
               );
@@ -941,6 +942,7 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
               undefined,
               this.plugin.settings.dropbox,
               undefined,
+              undefined,
               this.app.vault.getName(),
               () => self.plugin.saveSettings()
             );
@@ -1055,6 +1057,7 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
             undefined,
             undefined,
             this.plugin.settings.dropbox,
+            undefined,
             undefined,
             this.app.vault.getName(),
             () => self.plugin.saveSettings()
@@ -1205,6 +1208,7 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
             undefined,
             undefined,
             this.plugin.settings.onedrive,
+            undefined,
             this.app.vault.getName(),
             () => self.plugin.saveSettings()
           );
@@ -1425,6 +1429,7 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
             "webdav",
             undefined,
             this.plugin.settings.webdav,
+            undefined,
             undefined,
             undefined,
             this.app.vault.getName(),
@@ -2178,7 +2183,8 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
   private async deleteRemoteMetadata() {
     const client = this.getClient();
     const remoteFiles = await client.listFromRemote();
-    const remoteMetadata = await getRemoteMetadata(remoteFiles.Contents, client, this.plugin.settings.password)
+    const remoteContents = Array.isArray(remoteFiles) ? remoteFiles : remoteFiles.Contents;
+    const remoteMetadata = await getRemoteMetadata(remoteContents, client, this.plugin.settings.password)
 
     await client.deleteFromRemote(DEFAULT_FILE_NAME_FOR_METADATAONREMOTE, this.plugin.settings.password, remoteMetadata.remoteEncryptedKey);
   }
@@ -2190,6 +2196,7 @@ export class RemotelySaveSettingTab extends PluginSettingTab {
       this.plugin.settings.webdav,
       this.plugin.settings.dropbox,
       this.plugin.settings.onedrive,
+      this.plugin.settings.django,
       this.app.vault.getName(),
       () => this.plugin.saveSettings()
     )

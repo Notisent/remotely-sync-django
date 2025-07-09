@@ -38,16 +38,17 @@ export class RemoteClient {
     saveUpdatedConfigFunc?: () => Promise<any>
   ) {
     this.serviceType = serviceType;
+    
     // the client may modify the config inplace,
     // so we use a ref not copy of config here
     if (serviceType === "s3") {
       this.s3Config = s3Config;
-    } else if (serviceType === "webdav") {
-      if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
-        throw Error(
-          "remember to provide vault name and callback while init webdav client"
-        );
-      }
+          } else if (serviceType === "webdav") {
+        if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
+          throw Error(
+            "remember to provide vault name and callback while init webdav client"
+          );
+        }
       const remoteBaseDir = webdavConfig.remoteBaseDir || vaultName;
       this.webdavConfig = webdavConfig;
       this.webdavClient = webdav.getWebdavClient(
@@ -55,12 +56,12 @@ export class RemoteClient {
         remoteBaseDir,
         saveUpdatedConfigFunc
       );
-    } else if (serviceType === "dropbox") {
-      if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
-        throw Error(
-          "remember to provide vault name and callback while init dropbox client"
-        );
-      }
+          } else if (serviceType === "dropbox") {
+        if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
+          throw Error(
+            "remember to provide vault name and callback while init dropbox client"
+          );
+        }
       const remoteBaseDir = dropboxConfig.remoteBaseDir || vaultName;
       this.dropboxConfig = dropboxConfig;
       this.dropboxClient = dropbox.getDropboxClient(
@@ -68,32 +69,32 @@ export class RemoteClient {
         remoteBaseDir,
         saveUpdatedConfigFunc
       );
-    } else if (serviceType === "onedrive") {
-      if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
-        throw Error(
-          "remember to provide vault name and callback while init onedrive client"
-        );
-      }
+          } else if (serviceType === "onedrive") {
+        if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
+          throw Error(
+            "remember to provide vault name and callback while init onedrive client"
+          );
+        }
       const remoteBaseDir = onedriveConfig.remoteBaseDir || vaultName;
       this.onedriveConfig = onedriveConfig;
       this.onedriveClient = onedrive.getOnedriveClient(
         this.onedriveConfig,
         remoteBaseDir,
         saveUpdatedConfigFunc
-      );
-    } else if (serviceType === "django") {
-      if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
-        throw Error(
-          "remember to provide vault name and callback while init django client"
+              );
+      } else if (serviceType === "django") {
+        if (vaultName === undefined || saveUpdatedConfigFunc === undefined) {
+          throw Error(
+            "remember to provide vault name and callback while init django client"
+          );
+        }
+        const remoteBaseDir = djangoConfig.remoteBaseDir || vaultName;
+        this.djangoConfig = djangoConfig;
+        this.djangoClient = django.getDjangoClient(
+          this.djangoConfig,
+          remoteBaseDir,
+          saveUpdatedConfigFunc
         );
-      }
-      const remoteBaseDir = djangoConfig.remoteBaseDir || vaultName;
-      this.djangoConfig = djangoConfig;
-      this.djangoClient = django.getDjangoClient(
-        this.djangoConfig,
-        remoteBaseDir,
-        saveUpdatedConfigFunc
-      );
     } else {
       throw Error(`not supported service type ${this.serviceType}`);
     }
