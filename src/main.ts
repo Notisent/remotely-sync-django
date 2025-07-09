@@ -132,6 +132,9 @@ export default class RemotelySavePlugin extends Plugin {
   isManual: boolean;
   isAlreadyRunning: boolean;
   syncOnSaveEvent?: EventRef;
+  syncOnDeleteEvent?: EventRef;
+  syncOnCreateEvent?: EventRef;
+  syncOnRenameEvent?: EventRef;
   vaultScannerIntervalId?: number;
   syncOnRemoteIntervalID?: number;
   statusBarIntervalID: number;
@@ -1189,10 +1192,22 @@ export default class RemotelySavePlugin extends Plugin {
   async toggleSyncOnSave(enabled: boolean) {
     let alreadyScheduled = false;
 
-    // Unregister vault change event
+    // Unregister vault change events
     if (this.syncOnSaveEvent !== undefined) {
       this.app.vault.offref(this.syncOnSaveEvent);
       this.syncOnSaveEvent = undefined;
+    }
+    if (this.syncOnDeleteEvent !== undefined) {
+      this.app.vault.offref(this.syncOnDeleteEvent);
+      this.syncOnDeleteEvent = undefined;
+    }
+    if (this.syncOnCreateEvent !== undefined) {
+      this.app.vault.offref(this.syncOnCreateEvent);
+      this.syncOnCreateEvent = undefined;
+    }
+    if (this.syncOnRenameEvent !== undefined) {
+      this.app.vault.offref(this.syncOnRenameEvent);
+      this.syncOnRenameEvent = undefined;
     }
 
     // Unregister scanning for .obsidian changes
@@ -1205,8 +1220,7 @@ export default class RemotelySavePlugin extends Plugin {
       return;
     }
     
-    // Register vault change event
-    this.syncOnSaveEvent = this.app.vault.on("modify", () => {
+    const scheduleSync = () => {
       if (this.syncStatus !== "idle" || alreadyScheduled) {
         return;
       }
@@ -1219,7 +1233,22 @@ export default class RemotelySavePlugin extends Plugin {
         await this.syncRun("auto");  
         alreadyScheduled = false;
       }, this.settings.syncOnSaveAfterMilliseconds);
-    });
+    };
+    
+    // Register vault change event for modifications
+    this.syncOnSaveEvent = this.app.vault.on("modify", scheduleSync);
+
+    // Register vault change event for deletions
+    this.syncOnDeleteEvent = this.app.vault.on("delete", scheduleSync);
+    this.registerEvent(this.syncOnDeleteEvent);
+
+    // Register vault change event for file creation (if supported)
+    this.syncOnCreateEvent = this.app.vault.on("create", scheduleSync);
+    this.registerEvent(this.syncOnCreateEvent);
+
+    // Register vault change event for file/folder moves/renames
+    this.syncOnRenameEvent = this.app.vault.on("rename", scheduleSync);
+    this.registerEvent(this.syncOnRenameEvent);
 
     // Scan vault for config directory changes
     const scanVault = async () => {

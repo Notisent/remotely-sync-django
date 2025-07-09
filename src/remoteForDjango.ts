@@ -392,8 +392,22 @@ export const downloadFromRemote = async (
       },
     });
 
-    if (response.status === 200) {
+        if (response.status === 200) {
       const data = response.json;
+      
+      // Handle folders separately - they don't have content
+      if (fileOrFolderPath.endsWith("/") || data.is_directory || data.content === undefined) {
+        if (!skipSaving) {
+          await mkdirpInVault(fileOrFolderPath, vault);
+        }
+        // Return empty buffer for folders
+        return new ArrayBuffer(0);
+      }
+      
+      // Handle files with content
+      if (!data.content || data.content === null) {
+        throw new Error(`No content available for file: ${fileOrFolderPath}`);
+      }
       
       // Decode base64 content
       let content = Buffer.from(data.content, "base64");
@@ -405,15 +419,10 @@ export const downloadFromRemote = async (
       }
 
       if (!skipSaving) {
-        if (fileOrFolderPath.endsWith("/")) {
-          // It's a folder
-          await mkdirpInVault(fileOrFolderPath, vault);
-        } else {
-          // It's a file
-          await vault.adapter.writeBinary(fileOrFolderPath, content.buffer, {
-            mtime: mtime,
-          });
-        }
+        // It's a file
+        await vault.adapter.writeBinary(fileOrFolderPath, content.buffer, {
+          mtime: mtime,
+        });
       }
 
       return content.buffer;
